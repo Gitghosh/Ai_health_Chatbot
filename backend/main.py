@@ -663,9 +663,31 @@ def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat() + "Z"}
 
 
+# @app.post("/query", response_model=QueryOut)
+# def receive_query(payload: QueryIn, db: Session = Depends(get_db)):
+#     # find or create user
+#     user = db.query(models.User).filter(models.User.phone == payload.phone).first()
+#     if not user:
+#         user = models.User(phone=payload.phone)
+#         db.add(user)
+#         db.commit()
+#         db.refresh(user)
+
+#     # save query
+#     q = models.Query(
+#         user_id=user.id,
+#         channel=payload.channel,
+#         message_text=payload.message,
+#         status="received"
+#     )
+#     db.add(q)
+#     db.commit()
+#     db.refresh(q)
+
+#     return {"query_id": q.id, "status": "saved"}
 @app.post("/query", response_model=QueryOut)
 def receive_query(payload: QueryIn, db: Session = Depends(get_db)):
-    # find or create user
+    # Find or create user
     user = db.query(models.User).filter(models.User.phone == payload.phone).first()
     if not user:
         user = models.User(phone=payload.phone)
@@ -673,7 +695,7 @@ def receive_query(payload: QueryIn, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
 
-    # save query
+    # Save query
     q = models.Query(
         user_id=user.id,
         channel=payload.channel,
@@ -685,7 +707,6 @@ def receive_query(payload: QueryIn, db: Session = Depends(get_db)):
     db.refresh(q)
 
     return {"query_id": q.id, "status": "saved"}
-
 
 @app.post("/ask-ml")
 def ask_ml(question: str):
@@ -712,15 +733,52 @@ def get_faq():
     return {"faqs": faqs}
 
 
+# @app.post("/webhook/twilio", response_class=PlainTextResponse)
+# def twilio_webhook(
+#     From: str = Form(...),
+#     Body: str = Form(...),
+#     To: str = Form(...),
+#     db: Session = Depends(get_db)
+# ):
+#     phone = From.replace("whatsapp:", "").strip()
+
+#     user = db.query(models.User).filter(models.User.phone == phone).first()
+#     if not user:
+#         user = models.User(phone=phone)
+#         db.add(user)
+#         db.commit()
+#         db.refresh(user)
+
+#     q = models.Query(
+#         user_id=user.id,
+#         channel="whatsapp",
+#         message_text=Body,
+#         status="received"
+#     )
+#     db.add(q)
+#     db.commit()
+#     db.refresh(q)
+
+#     retrieved = retrieve_docs(Body, top_k=3)
+#     rag_result = ask_medgemma(Body, retrieved)
+#     answer = rag_result.get("answer", "Sorry, AI could not answer.")
+
+#     q.response_text = answer
+#     q.status = "answered"
+#     db.commit()
+
+#     return answer
 @app.post("/webhook/twilio", response_class=PlainTextResponse)
 def twilio_webhook(
     From: str = Form(...),
     Body: str = Form(...),
-    To: str = Form(...),
     db: Session = Depends(get_db)
 ):
     phone = From.replace("whatsapp:", "").strip()
+    text = Body.lower().strip()
+    answer = "" # Initialize answer variable
 
+    # 1. Find or create the user
     user = db.query(models.User).filter(models.User.phone == phone).first()
     if not user:
         user = models.User(phone=phone)
@@ -728,6 +786,7 @@ def twilio_webhook(
         db.commit()
         db.refresh(user)
 
+    # 2. **[FIX]** Store the incoming message in the 'queries' table immediately
     q = models.Query(
         user_id=user.id,
         channel="whatsapp",
@@ -738,14 +797,54 @@ def twilio_webhook(
     db.commit()
     db.refresh(q)
 
-    retrieved = retrieve_docs(Body, top_k=3)
-    rag_result = ask_medgemma(Body, retrieved)
-    answer = rag_result.get("answer", "Sorry, AI could not answer.")
+    # 3. Route the query to the correct flow
+    # ---- MSG-04: Vaccination Chat Flow ----
+    if "schedule" in text or "check vaccination" in text:
+        schedule = [
+            "20 Sep 2025 - COVID-19 @ Community Clinic",
+            "21 Sep 2025 - Hepatitis B @ City Hospital",
+            "25 Sep 2025 - Polio @ Primary Health Center"
+        ]
+        answer = "📅 Upcoming vaccination slots:\n" + "\n".join(schedule)
+    
+    elif "reminder" in text or "set reminder" in text:
+        # Example: "Set reminder for Polio on 2025-09-25"
+        try:
+            parts = Body.split("for")[1].strip().split("on")
+            vaccine_name = parts[0].strip()
+            due_date_str = parts[1].strip()
+            
+            # Convert string to date object for the database
+            due_date = datetime.strptime(due_date_str, "%Y-%m-%d").date()
 
+            reminder = models.Reminder(
+                user_id=user.id,
+                vaccine_name=vaccine_name,
+                due_date=due_date,
+                status="pending"
+            )
+            db.add(reminder)
+            db.commit()
+            answer = f"✅ Reminder set for {vaccine_name} on {due_date_str}."
+        except Exception:
+            answer = "⚠️ Please use format: 'Set reminder for <vaccine> on YYYY-MM-DD'"
+
+    else:
+        # ---- MSG-03: Fallback to RAG pipeline ----
+        try:
+            retrieved = retrieve_docs(Body, top_k=3)
+            rag_result = ask_medgemma(Body, retrieved)
+            answer = rag_result.get("answer", "⚠️ Sorry, I could not find an answer for that.")
+        except Exception as e:
+            print(f"RAG pipeline failed: {e}")
+            answer = "⚠️ Sorry, an error occurred while processing your request."
+
+    # 4. **[FIX]** Update the query with the final answer
     q.response_text = answer
     q.status = "answered"
     db.commit()
 
+    # 5. Send the reply
     return answer
 
 
@@ -760,6 +859,22 @@ def rag_ask(payload: RAGIn):
         "debug": rag_result
     }
 
+@app.post("/rag-query")
+def rag_query(payload: RAGIn, db: Session = Depends(get_db)):
+    """This endpoint is for direct testing of the RAG pipeline."""
+    try:
+        retrieved = retrieve_docs(payload.question, top_k=payload.top_k)
+        rag_result = ask_medgemma(payload.question, retrieved)
+        answer = rag_result.get("answer", "⚠️ Sorry, AI could not answer.")
+        
+        return {
+            "question": payload.question,
+            "retrieved": retrieved,
+            "answer": answer
+        }
+    except Exception as e:
+        print(f"/rag-query failed: {e}")
+        raise HTTPException(status_code=500, detail="RAG pipeline error")
 # ---------------------------
 # NEW: Vaccination Mock Endpoint
 # ---------------------------
@@ -791,39 +906,69 @@ def create_reminder(payload: ReminderIn, db: Session = Depends(get_db)):
 
 
 # --- NEW: Day 5 Task Endpoints ---
+# @app.get("/alerts")
+# def get_alerts(db: Session = Depends(get_db)):
+#     """
+#     Endpoint to serve alert data to the frontend.
+#     It now uses a SQLAlchemy session to query the 'alerts' table.
+#     """
+#     try:
+#         # Use the session to query the Alert model, order by date, and get all results
+#         alerts = db.query(models.Alert).order_by(models.Alert.created_at.desc()).all()
+#         return alerts
+#     except Exception as e:
+#         print(f"Database error in /alerts: {e}")
+#         raise HTTPException(status_code=500, detail="Failed to retrieve alerts.")
+
+
+# # backend/main.py
+
+# @app.get("/education")
+# def get_education_topics():
+#     """
+#     This updated endpoint now searches through all subdirectories
+#     for valid document files.
+#     """
+#     docs_path = os.path.join('knowledge_base_docs', 'documents')
+#     topics = set()  # Use a set to automatically handle duplicate filenames
+
+#     if not os.path.isdir(docs_path):
+#         raise HTTPException(status_code=404, detail="Education documents directory not found.")
+
+#     # Use os.walk to go through all folders and subfolders
+#     for root, dirs, files in os.walk(docs_path):
+#         for filename in files:
+#             # Check for valid file extensions
+#             if filename.endswith(('.pdf', '.txt', '.md')):
+#                 topic_name = os.path.splitext(filename)[0]
+#                 topic_name = topic_name.replace('_', ' ').replace('-', ' ').title()
+#                 topics.add(topic_name)
+
+#     return {"topics": sorted(list(topics))}
+# ---------------------------
+# Day 5 Task Endpoints
+# ---------------------------
 @app.get("/alerts")
 def get_alerts(db: Session = Depends(get_db)):
-    """
-    Endpoint to serve alert data to the frontend.
-    It now uses a SQLAlchemy session to query the 'alerts' table.
-    """
+    """Serves ingested alert data to the frontend."""
     try:
-        # Use the session to query the Alert model, order by date, and get all results
         alerts = db.query(models.Alert).order_by(models.Alert.created_at.desc()).all()
         return alerts
     except Exception as e:
         print(f"Database error in /alerts: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve alerts.")
 
-
-# backend/main.py
-
 @app.get("/education")
 def get_education_topics():
-    """
-    This updated endpoint now searches through all subdirectories
-    for valid document files.
-    """
+    """Searches subdirectories for document files and returns a list of topics."""
     docs_path = os.path.join('knowledge_base_docs', 'documents')
     topics = set()  # Use a set to automatically handle duplicate filenames
 
     if not os.path.isdir(docs_path):
         raise HTTPException(status_code=404, detail="Education documents directory not found.")
 
-    # Use os.walk to go through all folders and subfolders
     for root, dirs, files in os.walk(docs_path):
         for filename in files:
-            # Check for valid file extensions
             if filename.endswith(('.pdf', '.txt', '.md')):
                 topic_name = os.path.splitext(filename)[0]
                 topic_name = topic_name.replace('_', ' ').replace('-', ' ').title()
