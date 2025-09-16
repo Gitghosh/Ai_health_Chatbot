@@ -186,7 +186,7 @@ INDEX_PATH = Path("knowledge_base_docs/faiss_index.bin")
 META_PATH = Path("knowledge_base_docs/index_meta.json")
 
 # 🔗 Set your Colab MedGemma public URL (replace ngrok link when you restart Colab)
-MEDGEMMA_URL = os.getenv("MEDGEMMA_URL", "https://54ee1dfbce90.ngrok-free.app/v1/medgemma/infer")
+MEDGEMMA_URL = os.getenv("MEDGEMMA_URL", "https://70c6be277dbb.ngrok-free.app/v1/medgemma/infer")
 
 
 class RAGHelper:

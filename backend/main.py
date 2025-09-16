@@ -788,3 +788,45 @@ def create_reminder(payload: ReminderIn, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(reminder)
     return {"id": reminder.id, "status": reminder.status}
+
+
+# --- NEW: Day 5 Task Endpoints ---
+@app.get("/alerts")
+def get_alerts(db: Session = Depends(get_db)):
+    """
+    Endpoint to serve alert data to the frontend.
+    It now uses a SQLAlchemy session to query the 'alerts' table.
+    """
+    try:
+        # Use the session to query the Alert model, order by date, and get all results
+        alerts = db.query(models.Alert).order_by(models.Alert.created_at.desc()).all()
+        return alerts
+    except Exception as e:
+        print(f"Database error in /alerts: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve alerts.")
+
+
+# backend/main.py
+
+@app.get("/education")
+def get_education_topics():
+    """
+    This updated endpoint now searches through all subdirectories
+    for valid document files.
+    """
+    docs_path = os.path.join('knowledge_base_docs', 'documents')
+    topics = set()  # Use a set to automatically handle duplicate filenames
+
+    if not os.path.isdir(docs_path):
+        raise HTTPException(status_code=404, detail="Education documents directory not found.")
+
+    # Use os.walk to go through all folders and subfolders
+    for root, dirs, files in os.walk(docs_path):
+        for filename in files:
+            # Check for valid file extensions
+            if filename.endswith(('.pdf', '.txt', '.md')):
+                topic_name = os.path.splitext(filename)[0]
+                topic_name = topic_name.replace('_', ' ').replace('-', ' ').title()
+                topics.add(topic_name)
+
+    return {"topics": sorted(list(topics))}
