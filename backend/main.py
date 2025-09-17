@@ -1493,7 +1493,7 @@ from fastapi.staticfiles import StaticFiles
 from twilio.rest import Client
 import csv
 from datetime import datetime
-from fastapi import FastAPI, Depends, HTTPException, Form
+from fastapi import FastAPI, Depends, HTTPException, Form, Request  # Add BackgroundTasks
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -1559,6 +1559,33 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# def process_rag_query_in_background(question: str, user_phone: str, query_id: int, db: Session):
+#     """
+#     This function runs in the background. It gets the AI answer and sends it as a new message.
+#     """
+#     print(f"BACKGROUND: Starting RAG process for query {query_id}...")
+#     try:
+#         retrieved = retrieve_docs(question, top_k=3)
+#         rag_result = ask_medgemma(question, retrieved)
+#         final_answer = rag_result.get("answer", "Sorry, I couldn't find an answer.")
+
+#         # Save the final answer to the original query
+#         db_query = db.query(models.Query).filter(models.Query.id == query_id).first()
+#         if db_query:
+#             db_query.response_text = final_answer
+#             db_query.status = "answered"
+#             db.commit()
+
+#         # Send the final answer as a NEW WhatsApp message
+#         send_whatsapp_message(to_number=user_phone, message=final_answer)
+#         print(f"BACKGROUND: Successfully sent RAG response to {user_phone}.")
+
+#     except Exception as e:
+#         print(f"BACKGROUND ERROR: RAG process failed for query {query_id}: {e}")
+#         # Optionally, send an error message to the user
+#         send_whatsapp_message(to_number=user_phone, message="Sorry, an error occurred while I was thinking.")
+
 
 # ---------------------------
 # Routes
@@ -1703,7 +1730,6 @@ def get_faq():
     
 #     return answer
 
-
 @app.post("/webhook/twilio", response_class=PlainTextResponse)
 def twilio_webhook(
     From: str = Form(...),
@@ -1711,39 +1737,33 @@ def twilio_webhook(
     db: Session = Depends(get_db)
 ):
     phone = From.replace("whatsapp:", "").strip()
-    channel = "whatsapp" if "whatsapp:" in From else "sms"
-    lang = "hi"
     text = Body.lower().strip()
     answer = ""
 
-    # Find or create user
+    # ... (user lookup and initial query saving code remains the same) ...
     user = db.query(models.User).filter(models.User.phone == phone).first()
     if not user:
         user = models.User(phone=phone)
         db.add(user)
         db.commit()
         db.refresh(user)
-
-    # Save incoming query
-    q = models.Query(user_id=user.id, channel=channel, message_text=Body, status="received")
+    q = models.Query(user_id=user.id, channel="whatsapp", message_text=Body, status="received")
     db.add(q)
     db.commit()
     db.refresh(q)
 
-    # --- Intent handling logic ---
+    # Intent handling logic
     if "schedule" in text or "check vaccination" in text:
-        # Query the database for reminders for this specific user
+        # ... (schedule logic remains the same) ...
         reminders = db.query(models.Reminder).filter(models.Reminder.user_id == user.id).order_by(models.Reminder.due_date).all()
-        
-        # [FIX] Indentation corrected in the if/else block below
         if not reminders:
             answer = "You have no upcoming vaccination reminders scheduled."
         else:
-            # Format the reminders from the database into a nice list
             schedule_list = [f"{r.due_date.strftime('%d %b %Y')} - {r.vaccine_name}" for r in reminders]
             answer = "📅 Here are your scheduled vaccination reminders:\n" + "\n".join(schedule_list)
 
     elif "reminder" in text or "set reminder" in text:
+        # ... (reminder logic remains the same) ...
         try:
             parts = Body.split("for")[1].strip().split("on")
             vaccine_name = parts[0].strip()
@@ -1757,15 +1777,20 @@ def twilio_webhook(
             answer = "⚠️ Please use format: 'Set reminder for <vaccine> on YYYY-MM-DD'"
 
     else:
-        # Fallback to RAG pipeline
+        # Fallback to RAG pipeline with new debug logs
         try:
+            print("MAIN.PY: --- Entering RAG fallback ---")
             retrieved = retrieve_docs(Body, top_k=3)
+            
             rag_result = ask_medgemma(Body, retrieved)
+            print(f"MAIN.PY: Got response from ask_medgemma: {rag_result}")
+            
             answer = rag_result.get("answer", "⚠️ Sorry, I could not find an answer for that.")
+            print(f"MAIN.PY: Extracted answer: {answer[:50]}...") # Print first 50 chars of the answer
+            
         except Exception as e:
-            print(f"RAG error: {e}")
-            answer = get_message("default", lang)
-
+            print(f"MAIN.PY: An error occurred in the RAG block: {e}")
+            answer = "Sorry, there was an error processing your request with the AI model."
     # Handle voice response request
     if "voice" in text and twilio_client:
         try:
@@ -1781,12 +1806,100 @@ def twilio_webhook(
             # Use logging for better error tracking in production
             logging.exception("Voice send failed")
 
-    # Save response and finalize
+    # Final steps with debug logs
+    print("MAIN.PY: About to update database with final answer...")
     q.response_text = answer
     q.status = "answered"
     db.commit()
+    print("MAIN.PY: Database updated successfully.")
     
+    print("MAIN.PY: About to return answer to Twilio...")
     return answer
+
+#Last correct running portion
+# @app.post("/webhook/twilio", response_class=PlainTextResponse)
+# def twilio_webhook(
+#     From: str = Form(...),
+#     Body: str = Form(...),
+#     db: Session = Depends(get_db)
+# ):
+#     phone = From.replace("whatsapp:", "").strip()
+#     channel = "whatsapp" if "whatsapp:" in From else "sms"
+#     lang = "hi"
+#     text = Body.lower().strip()
+#     answer = ""
+
+#     # Find or create user
+#     user = db.query(models.User).filter(models.User.phone == phone).first()
+#     if not user:
+#         user = models.User(phone=phone)
+#         db.add(user)
+#         db.commit()
+#         db.refresh(user)
+
+#     # Save incoming query
+#     q = models.Query(user_id=user.id, channel=channel, message_text=Body, status="received")
+#     db.add(q)
+#     db.commit()
+#     db.refresh(q)
+
+#     # --- Intent handling logic ---
+#     if "schedule" in text or "check vaccination" in text:
+#         # Query the database for reminders for this specific user
+#         reminders = db.query(models.Reminder).filter(models.Reminder.user_id == user.id).order_by(models.Reminder.due_date).all()
+        
+#         # [FIX] Indentation corrected in the if/else block below
+#         if not reminders:
+#             answer = "You have no upcoming vaccination reminders scheduled."
+#         else:
+#             # Format the reminders from the database into a nice list
+#             schedule_list = [f"{r.due_date.strftime('%d %b %Y')} - {r.vaccine_name}" for r in reminders]
+#             answer = "📅 Here are your scheduled vaccination reminders:\n" + "\n".join(schedule_list)
+
+#     elif "reminder" in text or "set reminder" in text:
+#         try:
+#             parts = Body.split("for")[1].strip().split("on")
+#             vaccine_name = parts[0].strip()
+#             due_date_str = parts[1].strip()
+#             due_date = datetime.strptime(due_date_str, "%Y-%m-%d").date()
+#             reminder = models.Reminder(user_id=user.id, vaccine_name=vaccine_name, due_date=due_date, status="pending")
+#             db.add(reminder)
+#             db.commit()
+#             answer = f"✅ Reminder set for {vaccine_name} on {due_date_str}."
+#         except Exception:
+#             answer = "⚠️ Please use format: 'Set reminder for <vaccine> on YYYY-MM-DD'"
+
+#     else:
+#         # Fallback to RAG pipeline
+#         try:
+#             retrieved = retrieve_docs(Body, top_k=3)
+#             rag_result = ask_medgemma(Body, retrieved)
+#             answer = rag_result.get("answer", "⚠️ Sorry, I could not find an answer for that.")
+#         except Exception as e:
+#             print(f"RAG error: {e}")
+#             answer = get_message("default", lang)
+
+#     # Handle voice response request
+#     if "voice" in text and twilio_client:
+#         try:
+#             # Assuming generate_tts_file is available and configured
+#             filepath, media_url = generate_tts_file(answer, "en")
+#             twilio_client.messages.create(
+#                 from_=TWILIO_PHONE_NUMBER,
+#                 to=From,
+#                 body="Here’s your audio reply 🎧",
+#                 media_url=[media_url]
+#             )
+#         except Exception as e:
+#             # Use logging for better error tracking in production
+#             logging.exception("Voice send failed")
+
+#     # Save response and finalize
+#     q.response_text = answer
+#     q.status = "answered"
+#     db.commit()
+    
+#     return answer
 
 
 # @app.post("/webhook/twilio", response_class=PlainTextResponse)
@@ -2141,3 +2254,21 @@ def set_reminder_from_frontend(payload: ReminderIn, db: Session = Depends(get_db
     
     return {"status": "success", "message": "Reminder set and notification sent."}
 
+# Add this temporary debug endpoint
+@app.post("/debug-webhook")
+async def debug_webhook(request: Request):
+    """
+    A temporary endpoint to catch and print all data from Twilio without validation.
+    """
+    print("\n--- DEBUGGING TWILIO REQUEST ---")
+
+    # Print the form data we received
+    form_data = await request.form()
+    print("Received Form Data:")
+    for key, value in form_data.items():
+        print(f"  {key}: {value}")
+
+    print("--- END DEBUGGING ---\n")
+
+    # Send a simple response back to Twilio
+    return PlainTextResponse("Debug data received. Check your server logs.")

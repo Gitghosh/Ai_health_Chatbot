@@ -187,7 +187,7 @@ META_PATH = Path("knowledge_base_docs/index_meta.json")
 
 # 🔗 Set your Colab MedGemma public URL (replace ngrok link when you restart Colab)
 # MEDGEMMA_URL = os.getenv("MEDGEMMA_API_URL", "https://70c6be277dbb.ngrok-free.app/v1/medgemma/infer")
-MEDGEMMA_URL = os.getenv("MEDGEMMA_API_URL","https://d8ee13da0d21.ngrok-free.app/v1/medgemma/infer" )
+MEDGEMMA_URL = os.getenv("MEDGEMMA_API_URL")
 
 class RAGHelper:
     def __init__(self, index_path=INDEX_PATH, meta_path=META_PATH, model_name="sentence-transformers/all-MiniLM-L6-v2"):
@@ -248,29 +248,116 @@ def retrieve_docs(question: str, top_k: int = 3):
 # -------------------------------
 # Wrapper to call MedGemma Colab API
 # -------------------------------
+# def ask_medgemma(question: str, retrieved: List[Dict], system_prompt: str = "You are a helpful medical assistant."):
+#     if not MEDGEMMA_URL:
+#         error_msg = "MEDGEMMA_API_URL environment variable is not set."
+#         print(f"ERROR: {error_msg}")
+#         return {"error": error_msg, "answer": "AI service is not configured."}
+#     """Send query + retrieved context to MedGemma Colab API."""
+#     # Join top-k docs into context
+#     context = "\n".join([r["text"] for r in retrieved])
+
+#     payload = {
+#         "question": question,
+#         "context": context,
+#         "system_prompt": system_prompt
+#     }
+
+#     try:
+#         resp = requests.post(MEDGEMMA_URL, json=payload, timeout=60)
+#         resp.raise_for_status()
+#         data = resp.json()
+#         return {
+#             "answer": data.get("answer", "No answer returned"),
+#             "used_context": context,
+#             "raw": data
+#         }
+#     except Exception as e:
+#         return {"error": str(e), "answer": "MedGemma request failed."}
+
+
+
+#Updated code for medgemma
+# def ask_medgemma(question: str, retrieved: List[Dict], system_prompt: str = "You are a helpful medical assistant."):
+#     """Send query + retrieved context to MedGemma Colab API."""
+    
+#     # Check if the URL was successfully loaded from the environment
+#     if not MEDGEMMA_URL:
+#         error_msg = "MEDGEMMA_API_URL environment variable is not set."
+#         print(f"ERROR: {error_msg}")
+#         return {"error": error_msg, "answer": "AI service is not configured."}
+        
+#     # Join top-k docs into a single context string
+#     context = "\n".join([r.get("text", "") for r in retrieved])
+
+#     payload = {
+#         "question": question,
+#         "context": context,
+#         "system_prompt": system_prompt
+#     }
+
+#     try:
+#         resp = requests.post(MEDGEMMA_URL, json=payload, timeout=60)
+#         resp.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+
+#         # [FIX] Add robust JSON parsing to handle non-JSON responses
+#         try:
+#             # Try to parse the response as JSON
+#             data = resp.json()
+#             answer = data.get("answer", "No answer key in JSON response.")
+#         except requests.exceptions.JSONDecodeError:
+#             # If JSON parsing fails, use the raw text as the answer
+#             print("WARNING: MedGemma response was not valid JSON. Using raw text.")
+#             answer = resp.text
+
+#         return {
+#             "answer": answer.strip(),
+#             "used_context": context
+#         }
+
+#     except requests.exceptions.RequestException as e:
+#         error_msg = f"Failed to connect to MedGemma API: {e}"
+#         print(f"ERROR: {error_msg}")
+#         return {"error": error_msg, "answer": "Sorry, there was a problem reaching the AI service."}
+#     except Exception as e:
+#         error_msg = f"An unexpected error occurred: {e}"
+#         print(f"ERROR: {error_msg}")
+#         return {"error": error_msg, "answer": "An unexpected error occurred while processing your request."}
+
+# In backend/rag_utils.py
+
 def ask_medgemma(question: str, retrieved: List[Dict], system_prompt: str = "You are a helpful medical assistant."):
+    """Send query + retrieved context to MedGemma Colab API."""
+    
     if not MEDGEMMA_URL:
         error_msg = "MEDGEMMA_API_URL environment variable is not set."
         print(f"ERROR: {error_msg}")
         return {"error": error_msg, "answer": "AI service is not configured."}
-    """Send query + retrieved context to MedGemma Colab API."""
-    # Join top-k docs into context
-    context = "\n".join([r["text"] for r in retrieved])
-
-    payload = {
-        "question": question,
-        "context": context,
-        "system_prompt": system_prompt
-    }
+        
+    context = "\n".join([r.get("text", "") for r in retrieved])
+    payload = { "question": question, "context": context, "system_prompt": system_prompt }
 
     try:
+        # --- ADDING DEBUG LOGS ---
+        print("BACKEND: Sending request to MedGemma...")
         resp = requests.post(MEDGEMMA_URL, json=payload, timeout=60)
+        
+        print(f"BACKEND: Received response with status code: {resp.status_code}")
         resp.raise_for_status()
+
+        print("BACKEND: Attempting to parse JSON...")
         data = resp.json()
-        return {
-            "answer": data.get("answer", "No answer returned"),
-            "used_context": context,
-            "raw": data
-        }
+        
+        print("BACKEND: JSON parsed successfully. Answer retrieved.")
+        answer = data.get("answer", "No answer key in JSON response.")
+        
+        return { "answer": answer.strip() }
+
+    except requests.exceptions.RequestException as e:
+        print(f"BACKEND: A network error occurred! Details: {e}")
+        error_msg = f"Failed to connect to MedGemma API: {e}"
+        return {"error": error_msg, "answer": "Sorry, there was a problem reaching the AI service."}
     except Exception as e:
-        return {"error": str(e), "answer": "MedGemma request failed."}
+        print(f"BACKEND: A general error occurred! Details: {e}")
+        error_msg = f"An unexpected error occurred: {e}"
+        return {"error": error_msg, "answer": "An unexpected error occurred while processing your request."}
