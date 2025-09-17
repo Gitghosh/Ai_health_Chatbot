@@ -9,7 +9,8 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path='backend/.env')
 
 #DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/ai_health")
-DATABASE_URL = os.getenv("DATABASE_URL","postgresql://ai_health_db_ukjx_user:zsydDs4BMcJX6bYVFj7v4iamTfvSuMlA@dpg-d30i7k0gjchc73esjaag-a.oregon-postgres.render.com/ai_health_db_ukjx" )
+DATABASE_URL = os.getenv("DATABASE_URL")
+#"postgresql://ai_health_db_ukjx_user:zsydDs4BMcJX6bYVFj7v4iamTfvSuMlA@dpg-d30i7k0gjchc73esjaag-a.oregon-postgres.render.com/ai_health_db_ukjx"
 # Synchronous engine (simple for prototype)
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
