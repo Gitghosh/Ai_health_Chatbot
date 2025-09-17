@@ -187,7 +187,7 @@ META_PATH = Path("knowledge_base_docs/index_meta.json")
 
 # 🔗 Set your Colab MedGemma public URL (replace ngrok link when you restart Colab)
 # MEDGEMMA_URL = os.getenv("MEDGEMMA_API_URL", "https://70c6be277dbb.ngrok-free.app/v1/medgemma/infer")
-MEDGEMMA_URL = os.getenv("MEDGEMMA_API_URL")
+MEDGEMMA_URL = os.getenv("MEDGEMMA_API_URL","https://d8ee13da0d21.ngrok-free.app/v1/medgemma/infer" )
 
 class RAGHelper:
     def __init__(self, index_path=INDEX_PATH, meta_path=META_PATH, model_name="sentence-transformers/all-MiniLM-L6-v2"):
@@ -249,6 +249,10 @@ def retrieve_docs(question: str, top_k: int = 3):
 # Wrapper to call MedGemma Colab API
 # -------------------------------
 def ask_medgemma(question: str, retrieved: List[Dict], system_prompt: str = "You are a helpful medical assistant."):
+    if not MEDGEMMA_URL:
+        error_msg = "MEDGEMMA_API_URL environment variable is not set."
+        print(f"ERROR: {error_msg}")
+        return {"error": error_msg, "answer": "AI service is not configured."}
     """Send query + retrieved context to MedGemma Colab API."""
     # Join top-k docs into context
     context = "\n".join([r["text"] for r in retrieved])
