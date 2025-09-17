@@ -108,7 +108,8 @@ import psycopg2.extras
 from dotenv import load_dotenv
 
 # Load environment variables from your specified file
-load_dotenv(dotenv_path='backend/.env.example')
+#load_dotenv(dotenv_path='backend/.env.example')
+load_dotenv(dotenv_path='backend/.env')
 
 # --- Configuration ---
 DATABASE_URL = os.getenv("DATABASE_URL")

@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 
 #load_dotenv()
 # AFTER
-load_dotenv(dotenv_path='backend/.env.example')
+#load_dotenv(dotenv_path='backend/.env.example')
+load_dotenv(dotenv_path='backend/.env')
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 def create_tables():

@@ -979,7 +979,518 @@
 
 #Code edited for twilio
 # backend/main.py
+# import os
+# import csv
+# from datetime import datetime
+# from fastapi import FastAPI, Depends, HTTPException, Form
+# from fastapi.responses import PlainTextResponse
+# from pydantic import BaseModel
+# from sqlalchemy.orm import Session
+
+# from backend.db import engine, SessionLocal, Base
+# from backend import models
+# from backend.rag_utils import retrieve_docs, ask_medgemma
+# from backend.utils import get_message
+# from backend.utils import send_whatsapp_message
+
+# import os
+# from gtts import gTTS
+# from uuid import uuid4
+# from fastapi.staticfiles import StaticFiles
+# from twilio.rest import Client
+# import logging
+
+# # ensure static folder exists (add near startup)
+# STATIC_DIR = os.path.join(os.path.dirname(_file_), "..", "static")
+# TTS_DIR = os.path.join(STATIC_DIR, "tts")
+# os.makedirs(TTS_DIR, exist_ok=True)
+
+# # mount static files so generated audio is publicly accessible
+# # place this right after creating the FastAPI app
+# app.mount("/static", StaticFiles(directory=os.path.abspath(STATIC_DIR)), name="static")
+
+# # load env vars for Twilio and base url
+# TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID")
+# TWILIO_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+# TWILIO_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")  # e.g. whatsapp:+1415...
+# BASE_URL = os.getenv("BASE_URL")  # e.g. https://ai-health-chatbot-6jaw.onrender.com
+
+# twilio_client = None
+# if TWILIO_SID and TWILIO_TOKEN:
+#     twilio_client = Client(TWILIO_SID, TWILIO_TOKEN)
+
+# # utility to generate TTS file path and url
+# def generate_tts_file(text: str, lang: str = "en"):
+#     """
+#     Generates an MP3 with gTTS and returns (file_path, public_url).
+#     """
+#     # sanitize + unique filename
+#     filename = f"tts_{uuid4().hex}.mp3"
+#     filepath = os.path.join(TTS_DIR, filename)
+
+#     # create TTS
+#     tts = gTTS(text=text, lang=lang, slow=False)
+#     tts.save(filepath)
+
+#     # build public url to file
+#     if not BASE_URL:
+#         # attempt to build from request host would be better, but BASE_URL env is recommended
+#         public_url = f"/static/tts/{filename}"
+#     else:
+#         public_url = f"{BASE_URL.rstrip('/')}/static/tts/{filename}"
+
+#     return filepath, public_url
+
+# # ---------------------------
+# # API: Generate TTS and return link (no Twilio send)
+# # ---------------------------
+# from pydantic import BaseModel
+# class TTSIn(BaseModel):
+#     text: str
+#     lang: str = "en"   # e.g. 'hi' for Hindi, 'bn' for Bengali, 'ta' for Tamil
+
+# @app.post("/tts")
+# def tts_generate(payload: TTSIn):
+#     """
+#     Generate TTS MP3 for the given text and language.
+#     Returns public URL to the file.
+#     """
+#     try:
+#         _, url = generate_tts_file(payload.text, payload.lang)
+#         return {"status": "ok", "url": url}
+#     except Exception as e:
+#         logging.exception("TTS generation failed")
+#         raise HTTPException(status_code=500, detail=str(e))
+
+# # ---------------------------
+# # API: Generate TTS and send as WhatsApp media via Twilio
+# # ---------------------------
+# class TTSSendIn(BaseModel):
+#     to_phone: str       # recipient phone in whatsapp:+91xxxx...
+#     text: str
+#     lang: str = "en"
+#     caption: str = None  # optional caption text to send with media
+
+# @app.post("/tts/send")
+# def tts_generate_and_send(payload: TTSSendIn):
+#     """
+#     Generates TTS audio, hosts it on /static, and sends it via Twilio WhatsApp as a media message.
+#     Returns Twilio message SID and public URL.
+#     """
+#     if not twilio_client:
+#         raise HTTPException(status_code=500, detail="Twilio client not configured. Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN.")
+
+#     if not BASE_URL:
+#         raise HTTPException(status_code=500, detail="BASE_URL env var must be set to public URL of this app.")
+
+#     # Generate TTS file and build URL
+#     try:
+#         _, media_url = generate_tts_file(payload.text, payload.lang)
+#     except Exception as e:
+#         logging.exception("TTS generation failed")
+#         raise HTTPException(status_code=500, detail=f"TTS generation failed: {e}")
+
+#     # Send via Twilio
+#     try:
+#         msg = twilio_client.messages.create(
+#             from_=TWILIO_NUMBER,
+#             to=payload.to_phone,
+#             body=payload.caption or "",            # caption as text message (optional)
+#             media_url=[media_url]                  # Twilio accepts list of media URLs
+#         )
+#         return {"status": "sent", "sid": msg.sid, "media_url": media_url}
+#     except Exception as e:
+#         logging.exception("Twilio send failed")
+#         raise HTTPException(status_code=500, detail=f"Twilio send failed: {e}")
+
+# # Auto-create tables
+# Base.metadata.create_all(bind=engine)
+
+# app = FastAPI(title="AI Health Chatbot Backend (Prototype)")
+
+# # ---------------------------
+# # Pydantic Schemas
+# # ---------------------------
+# class QueryIn(BaseModel):
+#     phone: str
+#     message: str
+#     channel: str = "whatsapp"
+
+# class QueryOut(BaseModel):
+#     query_id: int
+#     status: str
+
+# class RAGIn(BaseModel):
+#     question: str
+#     top_k: int = 3
+
+# # NEW: Reminder Schema
+# class ReminderIn(BaseModel):
+#     user_id: int
+#     vaccine_name: str
+#     due_date: str   # ISO format: YYYY-MM-DD
+
+# # ---------------------------
+# # DB Dependency
+# # ---------------------------
+# def get_db():
+#     db = SessionLocal()
+#     try:
+#         yield db
+#     finally:
+#         db.close()
+
+# # ---------------------------
+# # Routes
+# # ---------------------------
+# @app.get("/health")
+# def health():
+#     return {"status": "ok", "time": datetime.utcnow().isoformat() + "Z"}
+
+
+# @app.post("/query", response_model=QueryOut)
+# def receive_query(payload: QueryIn, db: Session = Depends(get_db)):
+#     # find or create user
+#     user = db.query(models.User).filter(models.User.phone == payload.phone).first()
+#     if not user:
+#         user = models.User(phone=payload.phone)
+#         db.add(user)
+#         db.commit()
+#         db.refresh(user)
+
+#     # save query
+#     q = models.Query(
+#         user_id=user.id,
+#         channel=payload.channel,
+#         message_text=payload.message,
+#         status="received"
+#     )
+#     db.add(q)
+#     db.commit()
+#     db.refresh(q)
+
+#     return {"query_id": q.id, "status": "saved"}
+
+
+# @app.post("/ask-ml")
+# def ask_ml(question: str):
+#     return {"answer": f"Stub response for: {question}"}
+
+
+# @app.get("/faq")
+# def get_faq():
+#     faqs = []
+#     FAQ_PATH = os.path.join(os.path.dirname(__file__), "..", "knowledge_base_docs", "test_queries.csv")
+
+#     if not os.path.exists(FAQ_PATH):
+#         return {"faqs": [], "error": "FAQ file not found"}
+
+#     with open(FAQ_PATH, newline="", encoding="utf-8") as f:
+#         reader = csv.DictReader(f)
+#         for row in reader:
+#             faqs.append({
+#                 "id": row["query_id"],
+#                 "category": row["category"],
+#                 "question": row["question"],
+#                 "answer": row["answer"]
+#             })
+#     return {"faqs": faqs}
+
+
+# @app.post("/webhook/twilio", response_class=PlainTextResponse)
+# def twilio_webhook(
+#     From: str = Form(...),
+#     Body: str = Form(...),
+#     To: str = Form(...),
+#     db: Session = Depends(get_db)
+# ):
+#     # --- Detect channel (WhatsApp vs SMS) ---
+#     if "whatsapp:" in From:
+#         phone = From.replace("whatsapp:", "").strip()
+#         channel = "whatsapp"
+#     else:
+#         phone = From.strip()
+#         channel = "sms"
+
+#     # --- Language setup (later: auto-detect or user profile) ---
+#     lang = "hi"
+
+#     # --- Find or create user ---
+#     user = db.query(models.User).filter(models.User.phone == phone).first()
+#     if not user:
+#         user = models.User(phone=phone)
+#         db.add(user)
+#         db.commit()
+#         db.refresh(user)
+
+#     # --- Save incoming query ---
+#     q = models.Query(
+#         user_id=user.id,
+#         channel=channel,
+#         message_text=Body,
+#         status="received"
+#     )
+#     db.add(q)
+#     db.commit()
+#     db.refresh(q)
+
+#     # --- Intent handling ---
+#     text = Body.lower().strip()
+
+#     if "schedule" in text or "check vaccination" in text:
+#         # Upcoming slots
+#         answer = (
+#             "📅 Upcoming vaccination slots:\n"
+#             "20 Sep 2025 - COVID-19 @ Community Clinic\n"
+#             "21 Sep 2025 - Hepatitis B @ City Hospital\n"
+#             "25 Sep 2025 - Polio @ Primary Health Center"
+#         )
+
+#     elif "reminder" in text or "set reminder" in text:
+#         try:
+#             # Example: "Set reminder for Polio on 2025-09-25"
+#             parts = Body.split("for")[1].strip().split("on")
+#             vaccine_name = parts[0].strip()
+#             due_date = parts[1].strip()
+
+#             reminder = models.Reminder(
+#                 user_id=user.id,
+#                 vaccine_name=vaccine_name,
+#                 due_date=due_date,
+#                 status="pending"
+#             )
+#             db.add(reminder)
+#             db.commit()
+#             db.refresh(reminder)
+
+#             answer = f"✅ Reminder set for {vaccine_name} on {due_date}."
+#         except Exception as e:
+#             print("Reminder parsing error:", e)  # Debug in Render logs
+#             answer = "⚠️ Please use format: 'Set reminder for <vaccine> on YYYY-MM-DD'"
+
+#     elif text == "1" and channel == "sms":
+#         # Escalation option for SMS
+#         answer = get_message("chw_followup", lang)
+
+#     else:
+#         # Fallback → RAG pipeline
+#         try:
+#             payload = RAGIn(question=Body, top_k=3)
+#             rag_response = rag_query(payload, db)
+#             answer = rag_response["answer"]
+#         except Exception as e:
+#             print("RAG error:", e)
+#             answer = get_message("default", lang)
+
+#     # --- SMS-specific rule: keep short ---
+#     if channel == "sms" and len(answer) > 160:
+#         answer = "Query too long. CHW will follow up."
+
+#     # --- Save response ---
+#     q.response_text = answer
+#     q.status = "answered"
+#     db.commit()
+
+#     return answer
+
+#     # # ---- Vaccination Chat Flow ----
+#     # def process_user_message(text: str, db: Session, user: models.User) -> str:
+#     # """Decide how to respond based on user message."""
+#     # text_lower = text.lower()
+
+#     # if "schedule" in text_lower or "check vaccination" in text_lower:
+#     #     schedule = [
+#     #         "20 Sep 2025 - COVID-19 @ Community Clinic",
+#     #         "21 Sep 2025 - Hepatitis B @ City Hospital",
+#     #         "25 Sep 2025 - Polio @ Primary Health Center"
+#     #     ]
+#     #     answer = "📅 Upcoming vaccination slots:\n" + "\n".join(schedule)
+
+#     # elif "reminder" in text_lower or "set reminder" in text_lower:
+#     #     try:
+#     #         # Example input: "Set reminder for Polio on 2025-09-25"
+#     #         parts = text.split("for")[1].strip().split("on")
+#     #         vaccine_name = parts[0].strip()
+#     #         due_date = parts[1].strip()
+
+#     #         reminder = models.Reminder(
+#     #             user_id=user.id,
+#     #             vaccine_name=vaccine_name,
+#     #             due_date=due_date,
+#     #             status="pending"
+#     #         )
+#     #         db.add(reminder)
+#     #         db.commit()
+#     #         db.refresh(reminder)
+
+#     #         answer = f"✅ Reminder set for {vaccine_name} on {due_date}."
+#     #     except Exception as e:
+#     #         print("Reminder parsing error:", e)  # Debug log
+#     #         answer = "⚠️ Please use format: 'Set reminder for <vaccine> on YYYY-MM-DD'"
+
+#     # else:
+#     #     # Fallback → RAG pipeline
+#     #     payload = RAGIn(question=text, top_k=3)
+#     #     rag_response = rag_query(payload, db)
+#     #     answer = rag_response["answer"]
+
+#     # return answer
+
+
+
+
+# @app.post("/rag-ask")
+# def rag_ask(payload: RAGIn):
+#     retrieved = retrieve_docs(payload.question, top_k=payload.top_k)
+#     rag_result = ask_medgemma(payload.question, retrieved)
+#     return {
+#         "question": payload.question,
+#         "retrieved": retrieved,
+#         "answer": rag_result.get("answer"),
+#         "debug": rag_result
+#     }
+
+# @app.post("/rag-query")
+# def rag_query(payload: RAGIn, db: Session = Depends(get_db)):
+#     try:
+#         # Store query in DB (optional if already handled)
+#         user = db.query(models.User).filter(models.User.phone == "test_user").first()
+#         if not user:
+#             user = models.User(phone="test_user")
+#             db.add(user)
+#             db.commit()
+#             db.refresh(user)
+
+#         q = models.Query(
+#             user_id=user.id,
+#             channel="internal",
+#             message_text=payload.question,
+#             status="received"
+#         )
+#         db.add(q)
+#         db.commit()
+#         db.refresh(q)
+
+#         # Run RAG pipeline
+#         retrieved = retrieve_docs(payload.question, top_k=payload.top_k)
+#         rag_result = ask_medgemma(payload.question, retrieved)
+#         answer = rag_result.get("answer", "⚠️ Sorry, AI could not answer.")
+
+#         # Update DB with answer
+#         q.response_text = answer
+#         q.status = "answered"
+#         db.commit()
+
+#         return {
+#             "query_id": q.id,
+#             "question": payload.question,
+#             "retrieved": retrieved,
+#             "answer": answer,
+#             "status": q.status
+#         }
+
+#     except Exception as e:
+#         import logging
+#         logging.error(f"/rag-query failed: {e}")
+#         raise HTTPException(status_code=500, detail="RAG pipeline error")
+
+
+# # ---------------------------
+# # NEW: Vaccination Mock Endpoint
+# # ---------------------------
+# @app.get("/vaccination/mock")
+# def vaccination_schedule():
+#     return {
+#         "status": "ok",
+#         "schedule": [
+#             {"date": "2025-09-20", "vaccine": "COVID-19", "center": "Community Clinic"},
+#             {"date": "2025-09-21", "vaccine": "Hepatitis B", "center": "City Hospital"},
+#             {"date": "2025-09-25", "vaccine": "Polio", "center": "Primary Health Center"}
+#         ]
+#     }
+
+
+# # ---------------------------
+# # NEW: Create Reminder Endpoint
+# # ---------------------------
+# @app.post("/reminder")
+# def set_reminder(payload: ReminderIn, db: Session = Depends(get_db)):
+#     reminder = models.Reminder(
+#         user_id=payload.user_id,
+#         vaccine_name=payload.vaccine_name,
+#         due_date=payload.due_date,
+#         status="pending"
+#     )
+#     db.add(reminder)
+#     db.commit()
+#     db.refresh(reminder)
+#     return {"id": reminder.id, "status": reminder.status}
+# #---------------------------
+# # # Day 5 Task Endpoints
+# # # ---------------------------
+# @app.get("/alerts")
+# def get_alerts(db: Session = Depends(get_db)):
+#     """Serves ingested alert data to the frontend."""
+#     try:
+#         alerts = db.query(models.Alert).order_by(models.Alert.created_at.desc()).all()
+#         return alerts
+#     except Exception as e:
+#         print(f"Database error in /alerts: {e}")
+#         raise HTTPException(status_code=500, detail="Failed to retrieve alerts.")
+
+# @app.get("/education")
+# def get_education_topics():
+#     """Searches subdirectories for document files and returns a list of topics."""
+#     docs_path = os.path.join('knowledge_base_docs', 'documents')
+#     topics = set()  # Use a set to automatically handle duplicate filenames
+
+#     if not os.path.isdir(docs_path):
+#         raise HTTPException(status_code=404, detail="Education documents directory not found.")
+
+#     for root, dirs, files in os.walk(docs_path):
+#         for filename in files:
+#             if filename.endswith(('.pdf', '.txt', '.md')):
+#                 topic_name = os.path.splitext(filename)[0]
+#                 topic_name = topic_name.replace('_', ' ').replace('-', ' ').title()
+#                 topics.add(topic_name)
+
+#     return {"topics": sorted(list(topics))}
+
+# @app.post("/api/set-reminder")
+# def set_reminder_from_frontend(payload: ReminderIn, db: Session = Depends(get_db)):
+#     """Sets a reminder from the frontend and sends a WhatsApp confirmation."""
+#     # Step 1: Save the reminder to the database (similar to your existing logic)
+#     reminder = models.Reminder(
+#         user_id=payload.user_id,
+#         vaccine_name=payload.vaccine_name,
+#         due_date=payload.due_date,
+#         status="pending"
+#     )
+#     db.add(reminder)
+#     db.commit()
+#     db.refresh(reminder)
+
+#     # Step 2: Get the user's phone number
+#     user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+#     if not user:
+#         raise HTTPException(status_code=404, detail="User not found")
+
+#     # Step 3: Send the WhatsApp notification
+#     message = f"✅ Reminder Confirmed! We will remind you about your {payload.vaccine_name} vaccine scheduled for {payload.due_date}."
+#     send_whatsapp_message(user.phone, message)
+    
+#     return {"status": "success", "message": "Reminder set and notification sent."}
+
+
+
+#TTs included main.py
+# backend/main.py
 import os
+import logging
+from gtts import gTTS
+# from uuid import uuid4
+from fastapi.staticfiles import StaticFiles
+from twilio.rest import Client
 import csv
 from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, Form
@@ -990,13 +1501,32 @@ from sqlalchemy.orm import Session
 from backend.db import engine, SessionLocal, Base
 from backend import models
 from backend.rag_utils import retrieve_docs, ask_medgemma
-from backend.utils import get_message
-
+from backend.utils import get_message, send_whatsapp_message
+from backend.tts_utils import generate_tts_file
 
 # Auto-create tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="AI Health Chatbot Backend (Prototype)")
+# ensure static/tts exists
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
+TTS_DIR = os.path.join(STATIC_DIR, "tts")
+os.makedirs(TTS_DIR, exist_ok=True)
+
+# mount static dir
+app.mount("/static", StaticFiles(directory=os.path.abspath(STATIC_DIR)), name="static")
+# ---------------------------
+# Twilio Setup
+# ---------------------------
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")  # e.g. whatsapp:+1415xxxx
+BASE_URL = os.getenv("BASE_URL")  # e.g. https://your-app.onrender.com
+
+twilio_client = None
+if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+    twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
 
 # ---------------------------
 # Pydantic Schemas
@@ -1086,26 +1616,19 @@ def get_faq():
             })
     return {"faqs": faqs}
 
-
 @app.post("/webhook/twilio", response_class=PlainTextResponse)
 def twilio_webhook(
     From: str = Form(...),
     Body: str = Form(...),
-    To: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    # --- Detect channel (WhatsApp vs SMS) ---
-    if "whatsapp:" in From:
-        phone = From.replace("whatsapp:", "").strip()
-        channel = "whatsapp"
-    else:
-        phone = From.strip()
-        channel = "sms"
-
-    # --- Language setup (later: auto-detect or user profile) ---
+    phone = From.replace("whatsapp:", "").strip()
+    channel = "whatsapp" if "whatsapp:" in From else "sms"
     lang = "hi"
+    text = Body.lower().strip()
+    answer = ""
 
-    # --- Find or create user ---
+    # Find or create user
     user = db.query(models.User).filter(models.User.phone == phone).first()
     if not user:
         user = models.User(phone=phone)
@@ -1113,76 +1636,235 @@ def twilio_webhook(
         db.commit()
         db.refresh(user)
 
-    # --- Save incoming query ---
-    q = models.Query(
-        user_id=user.id,
-        channel=channel,
-        message_text=Body,
-        status="received"
-    )
+    # Save incoming query
+    q = models.Query(user_id=user.id, channel=channel, message_text=Body, status="received")
     db.add(q)
     db.commit()
     db.refresh(q)
 
-    # --- Intent handling ---
-    text = Body.lower().strip()
-
+    # Intent handling logic
+    # if "schedule" in text or "check vaccination" in text:
+    #     reminders = db.query(models.Reminder).filter(models.Reminder.user_id == user.id).order_by(models.Reminder.due_date).all()
+    #     if not reminders:
+    #         answer = "You have no upcoming vaccination reminders scheduled."
+    #     else:
+    #         schedule_list = [f"{r.due_date.strftime('%d %b %Y')} - {r.vaccine_name}" for r in reminders]
+    #         answer = "📅 Here are your scheduled vaccination reminders:\n" + "\n".join(schedule_list)
     if "schedule" in text or "check vaccination" in text:
-        # Upcoming slots
-        answer = (
-            "📅 Upcoming vaccination slots:\n"
-            "20 Sep 2025 - COVID-19 @ Community Clinic\n"
-            "21 Sep 2025 - Hepatitis B @ City Hospital\n"
-            "25 Sep 2025 - Polio @ Primary Health Center"
-        )
+    # Query the database for reminders for this specific user
+       reminders = db.query(models.Reminder).filter(models.Reminder.user_id == user.id).order_by(models.Reminder.due_date).all()
 
+       if not reminders:
+        answer = "You have no upcoming vaccination reminders scheduled."
+       else:
+        # Format the reminders from the database into a nice list
+        schedule_list = [f"{r.due_date.strftime('%d %b %Y')} - {r.vaccine_name}" for r in reminders]
+        answer = "📅 Here are your scheduled vaccination reminders:\n" + "\n".join(schedule_list)
     elif "reminder" in text or "set reminder" in text:
         try:
-            # Example: "Set reminder for Polio on 2025-09-25"
             parts = Body.split("for")[1].strip().split("on")
             vaccine_name = parts[0].strip()
-            due_date = parts[1].strip()
-
-            reminder = models.Reminder(
-                user_id=user.id,
-                vaccine_name=vaccine_name,
-                due_date=due_date,
-                status="pending"
-            )
+            due_date_str = parts[1].strip()
+            due_date = datetime.strptime(due_date_str, "%Y-%m-%d").date()
+            reminder = models.Reminder(user_id=user.id, vaccine_name=vaccine_name, due_date=due_date, status="pending")
             db.add(reminder)
             db.commit()
-            db.refresh(reminder)
-
-            answer = f"✅ Reminder set for {vaccine_name} on {due_date}."
-        except Exception as e:
-            print("Reminder parsing error:", e)  # Debug in Render logs
+            answer = f"✅ Reminder set for {vaccine_name} on {due_date_str}."
+        except Exception:
             answer = "⚠️ Please use format: 'Set reminder for <vaccine> on YYYY-MM-DD'"
 
-    elif text == "1" and channel == "sms":
-        # Escalation option for SMS
-        answer = get_message("chw_followup", lang)
-
     else:
-        # Fallback → RAG pipeline
+        # Fallback to RAG pipeline
         try:
-            payload = RAGIn(question=Body, top_k=3)
-            rag_response = rag_query(payload, db)
-            answer = rag_response["answer"]
+            retrieved = retrieve_docs(Body, top_k=3)
+            rag_result = ask_medgemma(Body, retrieved)
+            answer = rag_result.get("answer", "⚠️ Sorry, I could not find an answer for that.")
         except Exception as e:
-            print("RAG error:", e)
+            print(f"RAG error: {e}")
             answer = get_message("default", lang)
 
-    # --- SMS-specific rule: keep short ---
-    if channel == "sms" and len(answer) > 160:
-        answer = "Query too long. CHW will follow up."
+    # Handle voice response request
+    if "voice" in text and twilio_client:
+        try:
+            media_url = generate_tts_file(answer, "en")
+            twilio_client.messages.create(
+                from_=TWILIO_PHONE_NUMBER,
+                to=From,
+                body="Here’s your audio reply 🎧",
+                media_url=[media_url]
+            )
+        except Exception as e:
+            logging.exception("Voice send failed")
 
-    # --- Save response ---
+    # Save response and finalize
     q.response_text = answer
     q.status = "answered"
     db.commit()
-
+    
     return answer
 
+# @app.post("/webhook/twilio", response_class=PlainTextResponse)
+# def twilio_webhook(
+#     From: str = Form(...),
+#     Body: str = Form(...),
+#     To: str = Form(...),
+#     db: Session = Depends(get_db)
+# ):
+#     # --- Detect channel (WhatsApp vs SMS) ---
+#     if "whatsapp:" in From:
+#         phone = From.replace("whatsapp:", "").strip()
+#         channel = "whatsapp"
+#     else:
+#         phone = From.strip()
+#         channel = "sms"
+
+#     # --- Language setup (later: auto-detect or user profile) ---
+#     lang = "hi"
+
+#     # --- Find or create user ---
+#     user = db.query(models.User).filter(models.User.phone == phone).first()
+#     if not user:
+#         user = models.User(phone=phone)
+#         db.add(user)
+#         db.commit()
+#         db.refresh(user)
+
+#     # --- Save incoming query ---
+#     q = models.Query(
+#         user_id=user.id,
+#         channel=channel,
+#         message_text=Body,
+#         status="received"
+#     )
+#     db.add(q)
+#     db.commit()
+#     db.refresh(q)
+
+#     # --- Intent handling ---
+#     text = Body.lower().strip()
+
+#     if "schedule" in text or "check vaccination" in text:
+#         # Upcoming slots
+#         answer = (
+#             "📅 Upcoming vaccination slots:\n"
+#             "20 Sep 2025 - COVID-19 @ Community Clinic\n"
+#             "21 Sep 2025 - Hepatitis B @ City Hospital\n"
+#             "25 Sep 2025 - Polio @ Primary Health Center"
+#         )
+
+#     elif "reminder" in text or "set reminder" in text:
+#         try:
+#             # Example: "Set reminder for Polio on 2025-09-25"
+#             parts = Body.split("for")[1].strip().split("on")
+#             vaccine_name = parts[0].strip()
+#             due_date = parts[1].strip()
+
+#             reminder = models.Reminder(
+#                 user_id=user.id,
+#                 vaccine_name=vaccine_name,
+#                 due_date=due_date,
+#                 status="pending"
+#             )
+#             db.add(reminder)
+#             db.commit()
+#             db.refresh(reminder)
+
+#             answer = f"✅ Reminder set for {vaccine_name} on {due_date}."
+#         except Exception as e:
+#             print("Reminder parsing error:", e)  # Debug in Render logs
+#             answer = "⚠️ Please use format: 'Set reminder for <vaccine> on YYYY-MM-DD'"
+
+#     elif text == "1" and channel == "sms":
+#         # Escalation option for SMS
+#         answer = get_message("chw_followup", lang)
+
+#     else:
+#         # Fallback → RAG pipeline
+#         try:
+#             payload = RAGIn(question=Body, top_k=3)
+#             rag_response = rag_query(payload, db)
+#             answer = rag_response["answer"]
+#         except Exception as e:
+#             print("RAG error:", e)
+#             answer = get_message("default", lang)
+
+
+# if "voice" in Body.lower():  # user asks for voice response
+#     try:
+#         _, media_url = generate_tts_file(answer, "en")
+#         if twilio_client:
+#             twilio_client.messages.create(
+#                 from_=TWILIO_NUMBER,
+#                 to=From,
+#                 body="Here’s your audio reply 🎧",
+#                 media_url=[media_url]
+#             )
+#     except Exception as e:
+#         logging.exception("Voice send failed")
+
+    
+
+#     # --- SMS-specific rule: keep short ---
+#     if channel == "sms" and len(answer) > 160:
+#         answer = "Query too long. CHW will follow up."
+
+#     # --- Save response ---
+#     q.response_text = answer
+#     q.status = "answered"
+#     db.commit()
+#     return answer
+
+# -----------------------------
+# NEW: TTS routes
+# -----------------------------
+
+class TTSIn(BaseModel):
+    text: str
+    lang: str = "en"
+
+@app.post("/tts")
+def tts_generate(payload: TTSIn):
+    try:
+        _, url = generate_tts_file(payload.text, payload.lang)
+        return {"status": "ok", "url": url}
+    except Exception as e:
+        logging.exception("TTS failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class TTSSendIn(BaseModel):
+    to_phone: str       # e.g. whatsapp:+91xxxx
+    text: str
+    lang: str = "en"
+    caption: str = None
+
+@app.post("/tts/send")
+def tts_generate_and_send(payload: TTSSendIn):
+    if not twilio_client:
+        raise HTTPException(status_code=500, detail="Twilio not configured")
+
+    if not BASE_URL:
+        raise HTTPException(status_code=500, detail="BASE_URL must be set")
+
+    try:
+        _, media_url = generate_tts_file(payload.text, payload.lang)
+    except Exception as e:
+        logging.exception("TTS gen failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    try:
+        msg = twilio_client.messages.create(
+            from_=TWILIO_PHONE_NUMBER,
+            to=payload.to_phone,
+            body=payload.caption or "",
+            media_url=[media_url]
+        )
+        return {"status": "sent", "sid": msg.sid, "media_url": media_url}
+    except Exception as e:
+        logging.exception("Twilio send failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    
     # # ---- Vaccination Chat Flow ----
     # def process_user_message(text: str, db: Session, user: models.User) -> str:
     # """Decide how to respond based on user message."""
@@ -1303,18 +1985,19 @@ def vaccination_schedule():
 # ---------------------------
 # NEW: Create Reminder Endpoint
 # ---------------------------
-@app.post("/reminder")
-def set_reminder(payload: ReminderIn, db: Session = Depends(get_db)):
-    reminder = models.Reminder(
-        user_id=payload.user_id,
-        vaccine_name=payload.vaccine_name,
-        due_date=payload.due_date,
-        status="pending"
-    )
-    db.add(reminder)
-    db.commit()
-    db.refresh(reminder)
-    return {"id": reminder.id, "status": reminder.status}
+# @app.post("/vaccination/reminder")
+# def set_reminder(payload: ReminderIn, db: Session = Depends(get_db)):
+#     reminder = models.Reminder(
+#         user_id=payload.user_id,
+#         vaccine_name=payload.vaccine_name,
+#         due_date=payload.due_date,
+#         status="pending"
+#     )
+#     db.add(reminder)
+#     db.commit()
+#     db.refresh(reminder)
+#     return {"id": reminder.id, "status": reminder.status}
+
 #---------------------------
 # # Day 5 Task Endpoints
 # # ---------------------------
@@ -1345,3 +2028,30 @@ def get_education_topics():
                 topics.add(topic_name)
 
     return {"topics": sorted(list(topics))}
+
+#@app.post("/api/set-reminder")
+@app.post("/reminder")
+def set_reminder_from_frontend(payload: ReminderIn, db: Session = Depends(get_db)):
+    """Sets a reminder from the frontend and sends a WhatsApp confirmation."""
+    # Step 1: Save the reminder to the database (similar to your existing logic)
+    reminder = models.Reminder(
+        user_id=payload.user_id,
+        vaccine_name=payload.vaccine_name,
+        due_date=payload.due_date,
+        status="pending"
+    )
+    db.add(reminder)
+    db.commit()
+    db.refresh(reminder)
+
+    # Step 2: Get the user's phone number
+    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Step 3: Send the WhatsApp notification
+    message = f"✅ Reminder Confirmed! We will remind you about your {payload.vaccine_name} vaccine scheduled for {payload.due_date}."
+    send_whatsapp_message(user.phone, message)
+    
+    return {"status": "success", "message": "Reminder set and notification sent."}
+
